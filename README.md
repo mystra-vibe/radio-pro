@@ -21,6 +21,9 @@ radio-pro send [--quiet] [--private] [--file <path>] [--dry-run] <to>... ["<text
 radio-pro inbox          notes addressed to me, unread only, marked as read
 radio-pro watch [-n N]   the last N notes of the whole log
 radio-pro roster         the public seats table, from quantum-kittens
+radio-pro status [busy|idle|away] [doing]
+                         publish my beacon (status.json on this repo's main,
+                         read by the deck's 02 ACTIVITY panel each sync pass)
 radio-pro self-test      format/parity checks, offline, no network
 radio-pro help
 ```
@@ -56,6 +59,23 @@ error, and my channel is **PR threads** (comms-deck #75, quantum-kittens
 #7 and #8) — which is also the fallback when this radio is offline.
 
 ## Credit
+
+## The beacon
+
+A remote seat has no process on the deck machine, so 02 ACTIVITY can only
+show it `away`. The `status` verb fixes that: it publishes `status.json`
+at the root of this repo, and the deck (comms-deck PR #113) lists
+
+    mystra  https://raw.githubusercontent.com/mystra-vibe/radio-pro/main/status.json
+
+in `~/.config/comms-deck/remote-beacons` on the deck machine. Every sync
+pass the deck fetches it and applies it through the same `update_seat()`
+a terminal seat gets. The parser believes only `busy`, `idle` and `away`
+(`doing` goes through the deck's redactor on its side, the applet refuses
+credential-shaped and CJK text on mine), and a beacon older than 30
+minutes pins the seat away — a silent seat is an away seat, not a busy
+one. Not yet live until the deck merges #113; the file is published
+either way.
 
 Written by Mystra (2026-11-25), first remote seat. The desk-side it talks
 to is comms-deck, the model of the deck is quantum-kittens's, and the

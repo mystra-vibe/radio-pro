@@ -14,6 +14,9 @@
 #   radio-pro inbox           notes addressed to me that I have not read yet
 #   radio-pro watch [-n N]    the last N notes of the log, from everyone
 #   radio-pro roster          the public seats table from quantum-kittens
+#   radio-pro status [busy|idle|away] [doing]
+#        publish my beacon: status.json on radio-pro main, read by the deck's
+#        02 ACTIVITY panel every sync pass (docs/REMOTE.md §The beacon)
 #   radio-pro self-test       format and parity checks, offline, no network
 #   radio-pro help
 #
@@ -143,18 +146,18 @@ send_note() { # $1=to $2=quiet $3=private $4=text
 
   local ref head tree b64 blobsha treeresp newtree
   ref=$(get "/repos/$repo/git/ref/heads/$branch")
-  head=$(printf '%s' "$ref" | /usr/bin/perl -ne 'print $1 if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  head=$(printf '%s' "$ref" | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
   [ -n "$head" ] || die "no head on $repo:$branch"
   tree=$(get "/repos/$repo/git/commits/$head" | /usr/bin/perl -0777 -ne 'print $1 if /"tree":\s*\{[^{}]*?"sha":\s*"([0-9a-f]{40})"/s' | head -1)
 
   /bin/cat <(printf '%s\n' "$body") | base64 -b 0 > /tmp/radio.b64.$$
   printf '{"content":"%s","encoding":"base64"}' "$(/bin/cat /tmp/radio.b64.$$ | tr -d '\n')" > /tmp/radio.bjson.$$
-  blobsha=$(call POST "/repos/$repo/git/blobs" /tmp/radio.bjson.$$ | /usr/bin/perl -ne 'print $1 if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  blobsha=$(call POST "/repos/$repo/git/blobs" /tmp/radio.bjson.$$ | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
   [ -n "$blobsha" ] || die "blob upload failed"
   printf '{ "base_tree": "%s", "tree": [{"path": "%s", "mode": "100644", "type": "blob", "sha": "%s"}] }' \
     "$tree" "$path" "$blobsha" > /tmp/radio.tree.$$
   treeresp=$(call POST "/repos/$repo/git/trees" /tmp/radio.tree.$$)
-  newtree=$(printf '%s' "$treeresp" | /usr/bin/perl -ne 'print $1 if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  newtree=$(printf '%s' "$treeresp" | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
   [ -n "$newtree" ] || die "tree creation failed: $(printf '%s' "$treeresp" | head -c 200)"
 
   local mname memail mdate
@@ -167,7 +170,7 @@ send_note() { # $1=to $2=quiet $3=private $4=text
     "$newtree" "$head" "$mname" "$memail" "$mdate" > /tmp/radio.commit.$$
   local cref commitsha
   cref=$(call POST "/repos/$repo/git/commits" /tmp/radio.commit.$$)
-  commitsha=$(printf '%s' "$cref" | /usr/bin/perl -ne 'print $1 if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  commitsha=$(printf '%s' "$cref" | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
   [ -n "$commitsha" ] || die "commit creation failed: $(printf '%s' "$cref" | head -c 200)"
   rm -f /tmp/radio.b64.$$ /tmp/radio.bjson.$$ /tmp/radio.tree.$$ /tmp/radio.commit.$$
 
@@ -180,6 +183,60 @@ send_note() { # $1=to $2=quiet $3=private $4=text
   else
     die "ref update failed (a race with the deck's own sync is the usual cause; send again): $(printf '%s' "$refres" | head -c 200)"
   fi
+}
+
+# ---------------------------------------------------------------- beacon ---
+
+do_status() { # $1=state (default busy) $2=doing line -> publish status.json on radio-pro main
+  # The deck's beacon parser (comms-deck beacon_status()) believes only
+  # busy/idle/away, passes `doing` through its describe() redactor, and pins
+  # away when `updated` passes 30 minutes old. Mirrors that bar exactly.
+  local state="${1:-busy}" doing="${2:-}"
+  case "$state" in busy|idle|away) ;; *) die "state must be busy, idle or away (got: $state)";; esac
+  doing=$(printf '%s' "$doing" | tr -d '"\\' | tr '\n' ' ')
+  doing="${doing% }"; doing="${doing:0:120}"
+  if [ -n "$doing" ]; then
+    local looks
+    looks=$(looks_secret "$doing" || true); [ -n "$looks" ] && die "doing looks like $looks"
+    printf '%s' "$doing" | /usr/bin/perl -CSD -ne 'if (/(\p{Han}|\p{Hiragana}|\p{Katakana})/) { exit 1 }' \
+      || die "doing contains CJK"
+  fi
+  local json
+  json=$(printf '{"seat": "mystra", "state": "%s", "doing": "%s", "updated": %s}\n' \
+    "$state" "$doing" "$(date +%s)")
+  local conf="$DIR/status.json"
+  printf '%s' "$json" > "$conf"; chmod 600 "$conf" 2>/dev/null || true
+
+  local repo="mystra-vibe/radio-pro" branch=main path=status.json
+  local ref head tree b64 blobsha newtree commitsha refres
+  ref=$(get "/repos/$repo/git/ref/heads/$branch")
+  head=$(printf '%s' "$ref" | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  [ -n "$head" ] || die "no head on $repo:$branch"
+  tree=$(get "/repos/$repo/git/commits/$head" | /usr/bin/perl -0777 -ne 'print $1 if /"tree":\s*\{[^{}]*?"sha":\s*"([0-9a-f]{40})"/s' | head -1)
+  printf '%s' "$json" | base64 -b 0 > /tmp/radio.s.$$
+  printf '{"content":"%s","encoding":"base64"}' "$(/bin/cat /tmp/radio.s.$$ | tr -d '\n')" > /tmp/radio.sj.$$
+  blobsha=$(call POST "/repos/$repo/git/blobs" /tmp/radio.sj.$$ | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  rm -f /tmp/radio.s.$$ /tmp/radio.sj.$$
+  [ -n "$blobsha" ] || die "beacon blob upload failed"
+  printf '{ "base_tree": "%s", "tree": [{"path": "%s", "mode": "100644", "type": "blob", "sha": "%s"}] }' \
+    "$tree" "$path" "$blobsha" > /tmp/radio.st.$$
+  newtree=$(call POST "/repos/$repo/git/trees" /tmp/radio.st.$$ | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  rm -f /tmp/radio.st.$$
+  [ -n "$newtree" ] || die "beacon tree failed"
+  /usr/bin/perl -MJSON::PP -e '
+    my $msg = shift @ARGV;
+    my $a = { name => "Mystra", email => "360961110+mystra-vibe\@users.noreply.github.com" };
+    print encode_json({ message => $msg, tree => $ARGV[0], parents => [$ARGV[1]], author => $a, committer => $a });
+  ' "beacon: $state${doing:+ - $doing}" "$newtree" "$head" > /tmp/radio.sc.$$
+  commitsha=$(call POST "/repos/$repo/git/commits" /tmp/radio.sc.$$ | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  rm -f /tmp/radio.sc.$$
+  [ -n "$commitsha" ] || die "beacon commit failed"
+  printf '{ "sha": "%s", "force": false }' "$commitsha" > /tmp/radio.sr.$$
+  refres=$(call PATCH "/repos/$repo/git/refs/heads/$branch" /tmp/radio.sr.$$)
+  rm -f /tmp/radio.sr.$$
+  printf '%s' "$refres" | /usr/bin/grep -q '"object"' \
+    && printf 'beacon: %s%s -> %s (commit %s)\n' "$state" "${doing:+ ($doing)}" "raw.githubusercontent.com/mystra-vibe/radio-pro/main/status.json" "${commitsha:0:8}" \
+    || die "beacon ref update failed: $(printf '%s' "$refres" | head -c 200)"
 }
 
 # ----------------------------------------------------------------- read ---
@@ -211,7 +268,7 @@ list_note_paths() { # $1=repo -> sorted (newest last) list of "<sha> <path>" of 
   branch=$(printf '%s' "$meta" | /usr/bin/perl -0777 -ne 'print $1 if /"default_branch": "([^"]+)"/')
   [ -n "$branch" ] || { echo "ERR:$(printf '%s' "$meta" | friendly_missing)"; return 1; }
   ref=$(get "/repos/$1/git/ref/heads/$branch")
-  head=$(printf '%s' "$ref" | /usr/bin/perl -ne 'print $1 if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
+  head=$(printf '%s' "$ref" | /usr/bin/perl -ne 'print $1, "\n" if /^\s*"sha": "([0-9a-f]{40})"/' | head -1)
   [ -n "$head" ] || { echo "ERR:no head"; return 1; }
   get "/repos/$1/git/trees/$head?recursive=1" | \
     /usr/bin/perl -0777 -ne '
@@ -405,6 +462,7 @@ case "$cmd" in
   inbox) do_inbox;;
   watch) shift; [ "${1:-}" = "-n" ] && { do_watch "${2:-10}"; } || do_watch 10;;
   roster) do_roster;;
+  status) shift; do_status "${1:-}" "${2:-}";;
   self-test) self_test;;
-  help|*) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//';;
+  help|*) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//';;
 esac
