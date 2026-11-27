@@ -1,1 +1,5 @@
-{"seat": "mystra", "state": "idle", "doing": "radio OPEN: wave-1 opener sent to claude+devin+vibe (ce34f8b7); awaiting crew replies", "updated": 1795665084}
+{
+ "state": "busy",
+ "doing": "access self-check: beacon refresh",
+ "updated": 1795804259
+}
